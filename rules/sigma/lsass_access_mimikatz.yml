@@ -1,0 +1,31 @@
+title: Suspicious Process Access to LSASS
+id: c4a0480f-c582-4498-a47c-ee54dffdf8c2
+status: experimental
+description: Detects a process opening LSASS with access rights typical of credential dumping tools such as Mimikatz.
+references:
+    - https://attack.mitre.org/techniques/T1003/001/
+author: your-name
+date: 2026-11-22
+tags:
+    - attack.credential-access
+    - attack.t1003.001
+logsource:
+    category: process_access
+    product: windows
+detection:
+    selection:
+        TargetImage|endswith: '\lsass.exe'
+        GrantedAccess|contains:
+            - '0x1010'
+            - '0x1410'
+            - '0x1438'
+            - '0x143a'
+            - '0x1fffff'
+    filter_system:
+        SourceImage|startswith:
+            - 'C:\Windows\System32\'
+            - 'C:\Program Files\'
+    condition: selection and not filter_system
+falsepositives:
+    - Security and backup software running from non-standard paths
+level: high
