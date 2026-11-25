@@ -1,0 +1,68 @@
+name: detections
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y yara jq
+          pip install sigma-cli
+          sigma plugin install elasticsearch
+          mkdir -p /tmp/cs
+          gh release download -R WithSecureLabs/chainsaw -p '*x86_64-unknown-linux-gnu.tar.gz' -D /tmp/cs
+          tar -xzf /tmp/cs/*.tar.gz -C /tmp/cs
+          git clone --depth 1 https://github.com/WithSecureLabs/chainsaw /tmp/cs-repo
+          echo "CHAINSAW=$(find /tmp/cs -type f -name chainsaw | head -1)" >> $GITHUB_ENV
+
+      - name: Lint Sigma
+        run: sigma check rules/sigma
+
+      - name: YARA matches positives
+        run: |
+          for r in rules/yara/*.yar; do
+            yarac "$r" /tmp/compiled.yarc
+            hits=$(yara -r "$r" tests/yara/pos | wc -l)
+            [ "$hits" -gt 0 ] || { echo "FAIL: $r matched nothing in pos/"; exit 1; }
+          done
+
+      - name: YARA silent on clean files
+        run: |
+          for r in rules/yara/*.yar; do
+            hits=$(yara -r "$r" tests/yara/neg | wc -l)
+            [ "$hits" -eq 0 ] || { echo "FAIL: $r false positive in neg/"; exit 1; }
+          done
+
+      - name: Sigma fires on test EVTX
+        run: |
+          chmod +x "$CHAINSAW"
+          "$CHAINSAW" hunt tests/evtx -s rules/sigma \
+            --mapping /tmp/cs-repo/mappings/sigma-event-logs-all.yml \
+            --json -q -o /tmp/hits.json
+          n=$(jq length /tmp/hits.json)
+          echo "Chainsaw hits: $n"
+          [ "$n" -gt 0 ] || { echo "FAIL: no Sigma rule fired on tests/evtx"; exit 1; }
+
+      - name: Convert Sigma to Elastic rules
+        run: |
+          mkdir -p build
+          sigma convert -t lucene -p ecs_windows -f siem_rule_ndjson \
+            rules/sigma -o build/elastic_rules.ndjson
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elastic-rules
+          path: build/elastic_rules.ndjson
